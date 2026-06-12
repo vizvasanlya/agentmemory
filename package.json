@@ -1,11 +1,10 @@
 {
-  "name": "agentmemory",
+  "name": "@vizvasanlya/agentmemory",
   "version": "0.1.0",
   "description": "Local-first memory and context compression for AI coding agents",
   "type": "module",
   "bin": {
-    "agentmemory": "dist/cli.js",
-    "agentmemory-mcp": "dist/mcp.js"
+    "agentmemory": "dist/cli.js"
   },
   "exports": {
     ".": "./dist/index.js",

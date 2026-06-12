@@ -12,6 +12,12 @@ AgentMemory gives Claude Code, OpenAI Codex CLI, Gemini CLI, Cursor, Aider, and 
 - Indexes a project structure and stores it as memory.
 - Works without telemetry or a required cloud account.
 
+## Install from npm
+
+```bash
+npm install -g @vizvasanlya/agentmemory
+```
+
 ## Install from source
 
 ```bash
