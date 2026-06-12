@@ -1,15 +1,19 @@
 # AgentMemory
 
-Local-first memory and context compression for AI coding agents.
+Local-first memory, learning, prompt context, and compression for AI coding agents.
 
-AgentMemory gives Claude Code, OpenAI Codex CLI, Gemini CLI, Cursor, Aider, and other MCP-compatible agents a durable project memory without sending private context to a cloud service.
+AgentMemory gives Claude Code, OpenAI Codex CLI, Gemini CLI, Cursor, Aider, OpenCode, Cline, and other MCP-compatible agents durable project memory without sending private context to a cloud service.
 
 ## What it does
 
-- Saves project decisions, architecture notes, bug history, preferences, and task context locally.
-- Searches saved memories from the CLI or through MCP.
+- Saves project decisions, architecture notes, bug history, preferences, tasks, and facts locally.
+- Learns memory candidates from project notes, session transcripts, logs, and docs.
+- Searches memories with vector-like ranking over title, tags, and content.
+- Builds ready-to-use prompt snippets for AI agents.
 - Compresses large logs/files before they enter an AI context window.
-- Indexes a project structure and stores it as memory.
+- Indexes project structure and stores it as memory.
+- Finds duplicate memories and reports memory health.
+- Exposes a full MCP server for coding agents.
 - Works without telemetry or a required cloud account.
 
 ## Install from npm
@@ -40,10 +44,58 @@ Save a memory:
 agentmemory remember "Use PostgreSQL for durable local memory" --kind decision --tag memory --tag local
 ```
 
+Learn memories from text, a file, or stdin:
+
+```bash
+cat NOTES.md | agentmemory learn --source notes
+agentmemory learn docs/architecture.md --source docs
+agentmemory learn --dry-run < session.txt
+```
+
+Preview memory candidates without saving:
+
+```bash
+agentmemory suggest README.md --source readme
+```
+
 Search memories:
 
 ```bash
 agentmemory recall "payment retry"
+agentmemory recall "architecture" --kind architecture --tag api
+```
+
+Build an AI prompt snippet from relevant memories:
+
+```bash
+agentmemory prompt "payment flow" > /tmp/agentmemory-prompt.md
+```
+
+List memories:
+
+```bash
+agentmemory list
+agentmemory list --kind bug
+```
+
+Update or delete memories:
+
+```bash
+agentmemory edit <memory-id> "New memory content" --title "New title"
+agentmemory forget <memory-id>
+```
+
+Find duplicate memories:
+
+```bash
+agentmemory duplicates
+agentmemory duplicates --threshold 0.75
+```
+
+Run a health check:
+
+```bash
+agentmemory doctor
 ```
 
 Compress a file:
@@ -58,16 +110,17 @@ Index the project:
 agentmemory index
 ```
 
+Import and export memories:
+
+```bash
+agentmemory export -o memories.json
+agentmemory import memories.json
+```
+
 Show status:
 
 ```bash
 agentmemory status
-```
-
-Export memories:
-
-```bash
-agentmemory export
 ```
 
 Start the MCP server:
@@ -83,15 +136,19 @@ AgentMemory exposes these MCP tools:
 - `agentmemory_remember`
 - `agentmemory_recall`
 - `agentmemory_compress`
+- `agentmemory_learn`
+- `agentmemory_prompt`
+- `agentmemory_duplicates`
+- `agentmemory_forget`
+- `agentmemory_list`
 - `agentmemory_status`
+- `agentmemory_doctor`
 
 It also exposes one resource:
 
 - `agentmemory://{projectId}/memory`
 
-## Claude Desktop config
-
-Replace the command path with your installed binary path.
+## Example Claude Desktop config
 
 ```json
 {
@@ -117,6 +174,20 @@ On Windows, it is usually:
 %APPDATA%\Claude\claude_desktop_config.json
 ```
 
+## Why this matters
+
+AI coding agents are powerful, but they often lose project context between sessions. AgentMemory solves that with a local memory layer that can be used by any MCP-compatible agent.
+
+The workflow is:
+
+1. Run `agentmemory init` in your project.
+2. Save decisions, architecture notes, and bug fixes with `remember`.
+3. Learn from docs and session transcripts with `learn`.
+4. Ask your agent to recall relevant memories with `recall` or MCP.
+5. Generate compact prompt context with `prompt`.
+6. Compress large logs with `compress`.
+7. Keep memory clean with `doctor` and `duplicates`.
+
 ## Development
 
 ```bash
@@ -136,9 +207,12 @@ src/
   index.ts
   lib/
     compression.ts
+    doctor.ts
+    learning.ts
     memory-store.ts
     mcp-server.ts
     paths.ts
+    prompt.ts
     repo-indexer.ts
     tokens.ts
     types.ts
@@ -147,8 +221,9 @@ tests/
 
 ## Roadmap
 
-- Better semantic search with optional local embeddings.
-- Per-agent prompt templates.
+- Optional local embeddings for stronger semantic recall.
+- Per-agent prompt templates for Claude Code, Codex, Gemini CLI, Cursor, and OpenCode.
 - Automatic memory suggestions after long sessions.
-- Team sync through an optional encrypted remote backend.
+- Memory importers for Slack, Linear, GitHub issues, and Notion.
+- Encrypted team sync for organizations.
 - Benchmarks for token savings and retrieval quality.

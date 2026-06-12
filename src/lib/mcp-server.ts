@@ -10,11 +10,14 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { compressContext } from './compression.js';
+import { buildDoctorReport } from './doctor.js';
+import { suggestMemories } from './learning.js';
 import { ensureProjectConfig, resolveProjectRoot } from './paths.js';
+import { buildPromptSnippet } from './prompt.js';
 import { MemoryStore } from './memory-store.js';
-import { memoryKinds, type MemoryKind } from './types.js';
+import { memoryKinds, type MemoryCandidate, type MemoryKind } from './types.js';
 
-const PACKAGE_VERSION = '0.1.0';
+const PACKAGE_VERSION = '0.2.0';
 
 export interface McpServerOptions {
   projectRoot?: string;
@@ -64,12 +67,41 @@ export async function createAgentMemoryServer(options: McpServerOptions = {}): P
 
   const recallSchema = z.object({
     query: z.string().min(1),
-    limit: z.number().int().min(1).max(50).optional().default(10)
+    limit: z.number().int().min(1).max(50).optional().default(10),
+    kind: z.enum(memoryKinds).optional(),
+    minScore: z.number().optional().default(0)
   });
 
   const compressSchema = z.object({
     text: z.string(),
     maxTokens: z.number().int().min(100).max(200000).optional().default(4000)
+  });
+
+  const learnSchema = z.object({
+    text: z.string(),
+    maxCandidates: z.number().int().min(1).max(50).optional().default(8),
+    minConfidence: z.number().min(0).max(1).optional().default(0.45),
+    source: z.string().optional(),
+    save: z.boolean().optional().default(true)
+  });
+
+  const promptSchema = z.object({
+    query: z.string().min(1),
+    limit: z.number().int().min(1).max(50).optional().default(8),
+    maxTokens: z.number().int().min(100).max(20000).optional().default(1800)
+  });
+
+  const duplicatesSchema = z.object({
+    threshold: z.number().min(0).max(1).optional().default(0.88)
+  });
+
+  const forgetSchema = z.object({
+    id: z.string().min(1)
+  });
+
+  const listSchema = z.object({
+    kind: z.enum(memoryKinds).optional(),
+    limit: z.number().int().min(1).max(100).optional().default(25)
   });
 
   const statusSchema = z.object({}).passthrough();
@@ -79,49 +111,47 @@ export async function createAgentMemoryServer(options: McpServerOptions = {}): P
       {
         name: 'agentmemory_remember',
         description: 'Save a durable project memory for the current AI agent session.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            kind: { type: 'string', enum: memoryKinds },
-            title: { type: 'string' },
-            content: { type: 'string' },
-            tags: { type: 'array', items: { type: 'string' } },
-            source: { type: 'string' }
-          },
-          required: ['content']
-        }
+        inputSchema: objectSchema(['content', 'kind', 'title', 'tags', 'source'])
       },
       {
         name: 'agentmemory_recall',
-        description: 'Search local project memories by query.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            query: { type: 'string' },
-            limit: { type: 'number' }
-          },
-          required: ['query']
-        }
+        description: 'Search local project memories by query with vector-like ranking.',
+        inputSchema: objectSchema(['query', 'limit', 'kind', 'minScore'])
       },
       {
         name: 'agentmemory_compress',
         description: 'Compress logs, files, or long text before sending it to an AI model.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            text: { type: 'string' },
-            maxTokens: { type: 'number' }
-          },
-          required: ['text']
-        }
+        inputSchema: objectSchema(['text', 'maxTokens'])
+      },
+      {
+        name: 'agentmemory_learn',
+        description: 'Extract memory candidates from text and optionally save them.',
+        inputSchema: objectSchema(['text', 'maxCandidates', 'minConfidence', 'source', 'save'])
+      },
+      {
+        name: 'agentmemory_prompt',
+        description: 'Build a ready-to-use prompt snippet from relevant memories.',
+        inputSchema: objectSchema(['query', 'limit', 'maxTokens'])
+      },
+      {
+        name: 'agentmemory_duplicates',
+        description: 'Find duplicate memories.',
+        inputSchema: objectSchema(['threshold'])
+      },
+      {
+        name: 'agentmemory_forget',
+        description: 'Delete a memory by id.',
+        inputSchema: objectSchema(['id'])
+      },
+      {
+        name: 'agentmemory_list',
+        description: 'List project memories.',
+        inputSchema: objectSchema(['kind', 'limit'])
       },
       {
         name: 'agentmemory_status',
-        description: 'Return local memory counts for the current project.',
-        inputSchema: {
-          type: 'object',
-          properties: {}
-        }
+        description: 'Return local memory counts and health.',
+        inputSchema: objectSchema([])
       }
     ]
   }));
@@ -191,7 +221,11 @@ export async function createAgentMemoryServer(options: McpServerOptions = {}): P
 
         case 'agentmemory_recall': {
           const parsed = recallSchema.parse(parsedArgs);
-          return toolSuccess(await store.search(config.projectId, parsed.query, parsed.limit));
+          return toolSuccess(await store.search(config.projectId, parsed.query, {
+            limit: parsed.limit,
+            kind: parsed.kind as MemoryKind | undefined,
+            minScore: parsed.minScore
+          }));
         }
 
         case 'agentmemory_compress': {
@@ -206,9 +240,66 @@ export async function createAgentMemoryServer(options: McpServerOptions = {}): P
           });
         }
 
+        case 'agentmemory_learn': {
+          const parsed = learnSchema.parse(parsedArgs);
+          const candidates = suggestMemories(parsed.text, {
+            maxCandidates: parsed.maxCandidates,
+            minConfidence: parsed.minConfidence,
+            source: parsed.source
+          });
+
+          if (!parsed.save) {
+            return toolSuccess({ candidates, saved: [], skipped: [] });
+          }
+
+          const saved: MemoryCandidate[] = [];
+          for (const candidate of candidates) {
+            await store.save({
+              projectId: config.projectId,
+              kind: candidate.kind,
+              title: candidate.title,
+              content: candidate.content,
+              tags: candidate.tags,
+              source: candidate.reason
+            });
+            saved.push(candidate);
+          }
+
+          return toolSuccess({ candidates, saved, skipped: [] });
+        }
+
+        case 'agentmemory_prompt': {
+          const parsed = promptSchema.parse(parsedArgs);
+          const results = await store.search(config.projectId, parsed.query, { limit: parsed.limit });
+          return toolSuccess(buildPromptSnippet(results, {
+            maxTokens: parsed.maxTokens,
+            limit: parsed.limit,
+            projectName: config.name
+          }));
+        }
+
+        case 'agentmemory_duplicates': {
+          const parsed = duplicatesSchema.parse(parsedArgs);
+          return toolSuccess(await store.findDuplicates(config.projectId, parsed.threshold));
+        }
+
+        case 'agentmemory_forget': {
+          const parsed = forgetSchema.parse(parsedArgs);
+          return toolSuccess({ deleted: await store.delete(parsed.id) });
+        }
+
+        case 'agentmemory_list': {
+          const parsed = listSchema.parse(parsedArgs);
+          return toolSuccess(await store.list(config.projectId, {
+            kind: parsed.kind as MemoryKind | undefined,
+            limit: parsed.limit
+          }));
+        }
+
         case 'agentmemory_status': {
           statusSchema.parse(parsedArgs);
           const counts = await store.count(config.projectId);
+          const health = await store.health(config.projectId);
           return toolSuccess({
             project: {
               projectId: config.projectId,
@@ -217,8 +308,14 @@ export async function createAgentMemoryServer(options: McpServerOptions = {}): P
               memoryPath: config.memoryPath
             },
             counts,
+            health,
             total: Object.values(counts).reduce((sum, count) => sum + count, 0)
           });
+        }
+
+        case 'agentmemory_doctor': {
+          const health = await store.health(config.projectId);
+          return toolSuccess(buildDoctorReport(health));
         }
 
         default:
@@ -240,4 +337,12 @@ export async function runMcpServer(options: McpServerOptions = {}): Promise<void
 
 function memoryResourceUri(projectId: string): string {
   return `agentmemory://${projectId}/memory`;
+}
+
+function objectSchema(properties: string[]): Record<string, unknown> {
+  return {
+    type: 'object',
+    properties: Object.fromEntries(properties.map((property) => [property, { type: property === 'limit' || property === 'maxTokens' || property === 'maxCandidates' || property === 'minConfidence' || property === 'minScore' || property === 'threshold' ? 'number' : 'string' }])),
+    required: properties.filter((property) => !['kind', 'title', 'tags', 'source', 'limit', 'minScore', 'maxTokens', 'maxCandidates', 'minConfidence', 'threshold', 'save'].includes(property))
+  };
 }

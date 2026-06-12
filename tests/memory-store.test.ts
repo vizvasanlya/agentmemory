@@ -41,4 +41,34 @@ describe('MemoryStore', () => {
     expect(counts.decision).toBe(1);
     expect(counts.bug).toBe(1);
   });
+
+  it('finds duplicate memories and reports health', async () => {
+    const memoryPath = path.join(await mkdtemp(path.join(tmpdir(), 'agentmemory-')), 'memory.jsonl');
+    tempDirs.push(path.dirname(memoryPath));
+    const store = new MemoryStore(memoryPath);
+    const projectId = 'project-2';
+
+    await store.save({
+      projectId,
+      kind: 'decision',
+      title: 'Use local JSONL memory',
+      content: 'Store memories in a local JSONL file so the CLI works without native dependencies.',
+      tags: ['memory']
+    });
+
+    await store.save({
+      projectId,
+      kind: 'decision',
+      title: 'Use JSONL memory locally',
+      content: 'Store memories in a local JSONL file so the CLI works without native dependencies.',
+      tags: ['memory']
+    });
+
+    const duplicates = await store.findDuplicates(projectId, 0.88);
+    expect(duplicates.length).toBeGreaterThan(0);
+
+    const health = await store.health(projectId);
+    expect(health.total).toBe(2);
+    expect(health.duplicatePairs).toBeGreaterThan(0);
+  });
 });
